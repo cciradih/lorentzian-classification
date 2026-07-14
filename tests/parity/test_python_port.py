@@ -5629,7 +5629,7 @@ class PythonPortParityTest(unittest.TestCase):
         self.assertIn("ports/pinescript/", readme)
         self.assertIn("SHA-pinned", readme)
         self.assertIn("Python CLI and library port", readme)
-        self.assertIn("not yet release-ready", readme)
+        self.assertIn("strict non-default coverage is still expanding", readme)
         self.assertNotIn("Placeholder", readme)
         self.assertNotIn("Pine Script", readme)
         self.assertIn("Python parity artifacts have been added", validation)

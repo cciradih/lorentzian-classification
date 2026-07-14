@@ -1,0 +1,487 @@
+name: Release MQL5 (.ex5)
+
+# Compiles the MQL5 indicator + Expert Advisor to .ex5 binaries on a Windows
+# runner (MetaEditor is Windows-only and the sole MQL5 compiler), then
+# publishes them as GitHub Releases when changes reach main or a release tag.
+#
+#   - pull_request: when MQL5 source changes, compiles both binaries and uploads
+#     them as a review artifact.
+#   - push to main: when MQL5 source changes, compiles both binaries and
+#     publishes/updates the `mql5-latest` prerelease. The first build for a new
+#     VERSION also creates an immutable `mql5-vX.Y` historical release.
+#   - workflow_dispatch: manual run. publish=false only compiles + uploads the
+#     .ex5 as a build artifact (use this to verify the pipeline). publish=true
+#     also cuts a Release for the given tag.
+#   - push of a tag matching mql5-v*: compiles and publishes automatically.
+#
+# Whatever gets published is always compiled from the exact commit being
+# released: tag pushes build the pushed tag, and publish=true dispatch runs
+# check out the requested tag rather than the ref they were dispatched from.
+
+on:
+  pull_request:
+    paths:
+      - "ports/mql5/VERSION"
+      - "ports/mql5/**/*.mq5"
+      - "ports/mql5/**/*.mqh"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Also publish a GitHub Release with the .ex5 artifacts"
+        type: boolean
+        default: false
+      tag:
+        description: "Existing tag to build and release (required when publish=true), e.g. mql5-v1.00"
+        type: string
+        default: ""
+  push:
+    branches:
+      - main
+    tags:
+      - "mql5-v*"
+    # GitHub does not apply path filters to tag pushes, so versioned releases
+    # still run explicitly while routine main pushes only run for MQL5 source
+    # or an intentional VERSION bump.
+    paths:
+      - "ports/mql5/VERSION"
+      - "ports/mql5/**/*.mq5"
+      - "ports/mql5/**/*.mqh"
+
+# Least privilege by default; the release job elevates to contents: write.
+permissions:
+  contents: read
+
+# The vendor endpoint generates different installer bytes per request, so pin
+# the stable signer identity instead. Review any certificate rotation before
+# updating this fingerprint.
+env:
+  MT5_INSTALLER_URL: "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+  MT5_INSTALLER_PUBLISHER: "MetaQuotes Ltd"
+  MT5_INSTALLER_CERT_SHA256: "b0a4cb7ca3902c4d984e794b197554d56bc60d8a9d93509167d3f99e5fc57131"
+
+concurrency:
+  group: release-mql5-${{ github.ref }}
+  # A newer main build must never finish before an older build and then have
+  # the older build move the rolling release tag backwards.
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: Compile MQL5 to .ex5 (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      version_tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Validate publish inputs
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$REQUESTED_TAG" ]; then
+            echo "::error::publish=true requires a 'tag' input (e.g. mql5-v1.00)."
+            echo "::error::The tag must already exist; the .ex5 are built from it so they cannot diverge from the tagged source."
+            exit 1
+          fi
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          # Build exactly what we publish. Tag pushes already check out the tag;
+          # a publish=true dispatch must check out the requested tag instead of
+          # the ref it was dispatched from, or the binaries attached to the
+          # release would be built from unrelated source.
+          ref: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) && inputs.tag || '' }}
+
+      - name: Validate canonical MQL5 version
+        id: version
+        shell: pwsh
+        env:
+          REQUESTED_TAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish && inputs.tag) || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+        run: |
+          .github\scripts\validate_mql5_version.ps1 -RequestedTag $env:REQUESTED_TAG
+
+      - name: Require an unreleased version on pull requests
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh api --silent "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION_TAG}" > /dev/null 2>&1 ||
+             gh api --silent "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION_TAG}" > /dev/null 2>&1; then
+            echo "::error::${VERSION_TAG} is already released. Bump VERSION and both #property version declarations for this MQL5 source change."
+            exit 1
+          fi
+          echo "${VERSION_TAG} is available for a new immutable release."
+
+      - name: Record source commit
+        id: source
+        shell: bash
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Building from $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached) @ ${sha}"
+
+      - name: Download MetaTrader 5 installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = $env:MT5_INSTALLER_URL
+          $out = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          $len = (Get-Item $out).Length
+          Write-Host "Downloaded mt5setup.exe ($len bytes)"
+          if ($len -lt 100000) { throw "Installer suspiciously small ($len bytes)" }
+
+          $actualHash = (Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash
+          $signature = Get-AuthenticodeSignature -LiteralPath $out
+          if ($signature.Status -ne "Valid") {
+            throw "Installer Authenticode signature is not valid: $($signature.Status) ($($signature.StatusMessage))"
+          }
+          if ($null -eq $signature.SignerCertificate) {
+            throw "Installer Authenticode signature has no signer certificate"
+          }
+
+          $publisher = $signature.SignerCertificate.GetNameInfo(
+            [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+            $false
+          )
+          if (-not [string]::Equals($publisher, $env:MT5_INSTALLER_PUBLISHER, [System.StringComparison]::Ordinal)) {
+            throw "Unexpected installer publisher: expected '$($env:MT5_INSTALLER_PUBLISHER)', got '$publisher'"
+          }
+
+          $certificateFingerprint = $signature.SignerCertificate.GetCertHashString(
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256
+          )
+          if (-not [string]::Equals($certificateFingerprint, $env:MT5_INSTALLER_CERT_SHA256, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unexpected installer signing certificate: expected SHA-256 $($env:MT5_INSTALLER_CERT_SHA256), got $certificateFingerprint"
+          }
+
+          Write-Host "Installer SHA-256: $actualHash"
+          Write-Host "Verified Authenticode publisher: $publisher"
+          Write-Host "Verified signer certificate SHA-256: $certificateFingerprint"
+          "MT5_SETUP=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install MetaTrader 5 (silent) and locate MetaEditor
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "Running silent install: mt5setup.exe /auto"
+          Start-Process -FilePath $env:MT5_SETUP -ArgumentList "/auto" -Wait
+
+          # The /auto installer may return before files are fully in place, and
+          # may auto-launch the terminal. Poll for metaeditor64.exe, then stop
+          # any terminal it launched.
+          $roots = @(
+            "C:\Program Files\MetaTrader 5",
+            "C:\Program Files (x86)\MetaTrader 5",
+            "$env:APPDATA\MetaQuotes\Terminal"
+          )
+          $meta = $null
+          for ($i = 0; $i -lt 60; $i++) {
+            foreach ($r in $roots) {
+              if (Test-Path $r) {
+                $hit = Get-ChildItem -Path $r -Filter "metaeditor64.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($hit) { $meta = $hit.FullName; break }
+              }
+            }
+            if ($meta) { break }
+            Start-Sleep -Seconds 5
+          }
+          Get-Process terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (-not $meta) { throw "metaeditor64.exe not found after install" }
+          $installDir = Split-Path $meta -Parent
+          Write-Host "MetaEditor: $meta"
+          Write-Host "Install dir: $installDir"
+          "METAEDITOR=$meta"     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "MT5_INSTALL=$installDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Initialize portable data folder (standard MQL5 library)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installDir = $env:MT5_INSTALL
+          $terminal = Join-Path $installDir "terminal64.exe"
+          $mql5 = Join-Path $installDir "MQL5"
+
+          if (-not (Test-Path (Join-Path $mql5 "Include\Trade\Trade.mqh"))) {
+            Write-Host "Standard library not present yet; initializing portable terminal to populate MQL5\Include"
+            if (Test-Path $terminal) {
+              $p = Start-Process -FilePath $terminal -ArgumentList "/portable" -PassThru
+              # Give it time to scaffold the data folder, then stop it.
+              for ($i = 0; $i -lt 24; $i++) {
+                Start-Sleep -Seconds 5
+                if (Test-Path (Join-Path $mql5 "Include\Trade\Trade.mqh")) { break }
+              }
+              try { $p | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+              Get-Process terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          Write-Host "=== Install dir (depth 2) ==="
+          Get-ChildItem -Path $installDir -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+
+          if (Test-Path (Join-Path $mql5 "Include\Trade\Trade.mqh")) {
+            Write-Host "OK: standard library present at $mql5\Include\Trade\Trade.mqh"
+            "MT5_MQL5=$mql5" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          } else {
+            Write-Host "WARN: standard MQL5\Include not found under install dir; searching AppData data folders"
+            $cand = Get-ChildItem -Path "$env:APPDATA\MetaQuotes\Terminal" -Directory -ErrorAction SilentlyContinue |
+              ForEach-Object { Join-Path $_.FullName "MQL5" } |
+              Where-Object { Test-Path (Join-Path $_ "Include\Trade\Trade.mqh") } |
+              Select-Object -First 1
+            if ($cand) {
+              Write-Host "Found standard library at $cand"
+              "MT5_MQL5=$cand" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            } else {
+              throw "Could not locate a MQL5 tree containing Include\Trade\Trade.mqh"
+            }
+          }
+
+      - name: Stage repo MQL5 sources into the MQL5 tree
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $mql5 = $env:MT5_MQL5
+          $indDst = Join-Path $mql5 "Indicators\LorentzianClassification"
+          $expDst = Join-Path $mql5 "Experts"
+          New-Item -ItemType Directory -Force -Path $indDst | Out-Null
+          New-Item -ItemType Directory -Force -Path $expDst | Out-Null
+
+          Copy-Item -Path "ports\mql5\indicators\LorentzianClassification\*" -Destination $indDst -Recurse -Force
+          Copy-Item -Path "ports\mql5\experts\LorentzianClassification_EA.mq5" -Destination $expDst -Force
+
+          Write-Host "=== Staged indicator tree ==="
+          Get-ChildItem -Path $indDst -Recurse | Select-Object -ExpandProperty FullName
+          Write-Host "=== Staged experts ==="
+          Get-ChildItem -Path $expDst -Filter "*.mq5" | Select-Object -ExpandProperty FullName
+
+      - name: Compile indicator and EA
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $meta = $env:METAEDITOR
+          $mql5 = $env:MT5_MQL5
+
+          function Invoke-MqlCompile([string]$src) {
+            $log = [System.IO.Path]::ChangeExtension($src, ".log")
+            if (Test-Path $log) { Remove-Item $log -Force }
+            Write-Host "=== Compiling $src ==="
+            $proc = Start-Process -FilePath $meta `
+              -ArgumentList "/compile:`"$src`"", "/inc:`"$mql5`"", "/log:`"$log`"" `
+              -Wait -PassThru
+            $code = $proc.ExitCode
+            Write-Host "metaeditor64 exit code: $code"
+
+            $logText = ""
+            if (Test-Path $log) {
+              # MetaEditor writes logs as UTF-16LE.
+              $logText = Get-Content -Path $log -Encoding Unicode -Raw -ErrorAction SilentlyContinue
+              if (-not $logText) { $logText = Get-Content -Path $log -Raw -ErrorAction SilentlyContinue }
+              Write-Host "----- compile log -----"
+              Write-Host $logText
+              Write-Host "-----------------------"
+            } else {
+              Write-Host "WARN: no log file produced at $log"
+            }
+
+            $ex5 = [System.IO.Path]::ChangeExtension($src, ".ex5")
+            $errCount = $null
+            if ($logText -match '(\d+)\s+error') { $errCount = [int]$Matches[1] }
+
+            if ($errCount -ne $null -and $errCount -gt 0) {
+              throw "Compilation reported $errCount error(s) for $src"
+            }
+            if (-not (Test-Path $ex5)) {
+              throw "No .ex5 produced for $src (exit=$code, errors=$errCount)"
+            }
+            $sz = (Get-Item $ex5).Length
+            if ($sz -le 0) { throw "Empty .ex5 for $src" }
+            Write-Host "OK: $ex5 ($sz bytes)"
+            return $ex5
+          }
+
+          $indSrc = Join-Path $mql5 "Indicators\LorentzianClassification\LorentzianClassification.mq5"
+          $expSrc = Join-Path $mql5 "Experts\LorentzianClassification_EA.mq5"
+
+          # Indicator first: the EA embeds the compiled indicator via #resource.
+          $indEx5 = Invoke-MqlCompile $indSrc
+          # The EA embeds the indicator from the flat Indicators\ path (MQL5
+          # caps resource names at 63 chars, ruling out the subfolder path),
+          # so stage a copy there before the EA compiles.
+          Copy-Item $indEx5 -Destination (Join-Path $mql5 "Indicators\LorentzianClassification.ex5") -Force
+          $expEx5 = Invoke-MqlCompile $expSrc
+
+          $stage = Join-Path $env:GITHUB_WORKSPACE "dist"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item $indEx5 $stage -Force
+          Copy-Item $expEx5 $stage -Force
+          Write-Host "=== dist ==="
+          Get-ChildItem $stage | Format-Table Name, Length -AutoSize | Out-String | Write-Host
+
+      - name: Upload .ex5 artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mql5-ex5
+          path: dist/*.ex5
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: compile
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/mql5-v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    permissions:
+      contents: write # Required to create and update release tags and assets.
+    steps:
+      - name: Download .ex5 artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mql5-ex5
+          path: dist
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum ./*.ex5 > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Prepare immutable version release
+        id: version_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.compile.outputs.source_sha }}
+          VERSION_TAG: ${{ needs.compile.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+
+          is_main=false
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            is_main=true
+          fi
+
+          release_exists=false
+          if gh api --silent "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION_TAG}" > /dev/null 2>&1; then
+            release_exists=true
+          fi
+
+          tag_exists=false
+          if object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION_TAG}" --jq '.object | "\(.type) \(.sha)"' 2>/dev/null)"; then
+            tag_exists=true
+            read -r object_type tag_sha <<< "$object"
+            while [ "$object_type" = "tag" ]; do
+              object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object | "\(.type) \(.sha)"')"
+              read -r object_type tag_sha <<< "$object"
+            done
+          fi
+
+          if [ "$tag_exists" = false ]; then
+            if [ "$is_main" = false ]; then
+              echo "::error::Expected existing tag ${VERSION_TAG} for this explicit release."
+              exit 1
+            fi
+            gh api --silent --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${VERSION_TAG}" -f sha="${SOURCE_SHA}"
+            tag_sha="${SOURCE_SHA}"
+            echo "Created immutable version tag ${VERSION_TAG} at ${SOURCE_SHA}."
+          fi
+
+          if [ "${tag_sha}" != "${SOURCE_SHA}" ]; then
+            echo "::error::Tag ${VERSION_TAG} already belongs to ${tag_sha}, not compiled source ${SOURCE_SHA}. Bump the canonical MQL5 version."
+            exit 1
+          fi
+
+          if [ "$release_exists" = true ]; then
+            if [ "$is_main" = true ]; then
+              echo "Version ${VERSION_TAG} is already published; updating only mql5-latest."
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::Release ${VERSION_TAG} already exists and is immutable."
+            exit 1
+          fi
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Point rolling release tag at compiled source
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.compile.outputs.source_sha }}
+        run: |
+          if gh api --silent "repos/${GITHUB_REPOSITORY}/git/ref/tags/mql5-latest" > /dev/null 2>&1; then
+            gh api --silent --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags/mql5-latest" \
+              -f sha="${SOURCE_SHA}" -F force=true
+          else
+            gh api --silent --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/mql5-latest" -f sha="${SOURCE_SHA}"
+          fi
+
+      - name: Publish rolling release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: mql5-latest
+          name: MQL5 Latest
+          draft: false
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.ex5
+            dist/SHA256SUMS
+          body: |
+            Latest compiled MetaTrader 5 binaries for the Lorentzian Classification port.
+
+            - `LorentzianClassification.ex5` — indicator (only needed to show the indicator on a chart; install to `MQL5\Indicators\LorentzianClassification\`)
+            - `LorentzianClassification_EA.ex5` — Expert Advisor (Strategy Tester); self-contained, embeds the indicator
+            - `SHA256SUMS` — SHA-256 checksums for both binaries
+
+            Version `${{ needs.compile.outputs.version }}`, built from
+            `${{ needs.compile.outputs.source_sha }}` with MetaEditor on
+            `windows-latest`. This prerelease is updated after relevant pushes
+            to `main`; versioned `mql5-v*` releases remain immutable.
+
+      - name: Publish immutable version release
+        if: steps.version_release.outputs.publish == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.compile.outputs.version_tag }}
+          name: MQL5 ${{ needs.compile.outputs.version }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          overwrite_files: false
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.ex5
+            dist/SHA256SUMS
+          body: |
+            Immutable MetaTrader 5 binaries for Lorentzian Classification
+            version `${{ needs.compile.outputs.version }}`.
+
+            - `LorentzianClassification.ex5` — indicator (only needed to show the indicator on a chart; install to `MQL5\Indicators\LorentzianClassification\`)
+            - `LorentzianClassification_EA.ex5` — Expert Advisor (Strategy Tester); self-contained, embeds the indicator
+            - `SHA256SUMS` — SHA-256 checksums for both binaries
+
+            Built from `${{ needs.compile.outputs.source_sha }}` with
+            MetaEditor on `windows-latest`. The `.ex5` files embed the
+            MetaEditor build number and are not byte-reproducible across
+            compiler versions.
