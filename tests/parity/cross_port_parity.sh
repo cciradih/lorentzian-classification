@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Cross-port parity harness: prove the Rust, Python, and Lean ports produce
-# identical output on the same inputs, across the FULL 40-column result schema
-# (including backtest stream, alerts, colors, and trade stats that the Pine
-# gold baselines do not contain).
+# Cross-port parity harness: prove the implemented Rust, Python, and Lean ports
+# produce identical output on the same inputs, across the FULL 40-column result
+# schema (including backtest stream, alerts, colors, and trade stats that the
+# Pine gold baselines do not contain). The MQL5 port is excluded until it has
+# a runnable parity harness.
 #
 # For each baseline it runs all three CLIs and diffs their outputs with the
 # implementation-independent tests/parity/compare_csv.py comparator.

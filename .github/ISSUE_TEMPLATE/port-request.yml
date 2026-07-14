@@ -1,0 +1,97 @@
+name: Request a new port
+description: Propose a new language, platform, or runtime port for Lorentzian Classification.
+title: "Port request: "
+labels:
+  - port
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping us prioritize future Lorentzian Classification ports.
+        A strong request explains who needs the port, where it will run, and what validation evidence would make it trustworthy.
+
+  - type: input
+    id: target
+    attributes:
+      label: Target language or platform
+      description: Name the language, runtime, trading platform, or package ecosystem you want supported.
+      placeholder: "Example: TypeScript / Node.js, NinjaTrader, MATLAB, Julia"
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Intended use case
+      description: Describe what this port would unlock and who would use it.
+      placeholder: |
+        Example:
+        - Run Lorentzian Classification inside an existing Node.js research pipeline.
+        - Compare signals against exported TradingView data.
+        - Package the port for downstream strategy experiments.
+    validations:
+      required: true
+
+  - type: textarea
+    id: ecosystem
+    attributes:
+      label: Ecosystem constraints
+      description: List important runtime, packaging, API, broker, charting, or deployment constraints.
+      placeholder: |
+        Example:
+        - Must support Node.js 20 and browser bundlers.
+        - Prefer zero native dependencies.
+        - Needs CSV input/output compatible with the existing parity fixtures.
+    validations:
+      required: false
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation expectations
+      description: Tell us what would count as a trustworthy port for this ecosystem.
+      placeholder: |
+        Example:
+        - Match existing Pine/Python/Rust/Lean parity fixture outputs.
+        - Include documented numeric tolerances for platform-specific math differences.
+        - Provide a small example dataset and command-line smoke test.
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: Relevant references
+      description: Link documentation, package conventions, existing implementations, or user demand that should shape the port.
+      placeholder: |
+        Example:
+        - Official platform documentation:
+        - Comparable open-source package:
+        - Related discussion or user request:
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution support
+      description: Let us know whether you can help beyond opening the request.
+      options:
+        - I can test a finished port in this ecosystem.
+        - I can provide sample data or platform-specific validation exports.
+        - I can help implement or review the port.
+        - I am only requesting the port right now.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Request checklist
+      options:
+        - label: I checked the existing `ports/` directory and this port is not already available.
+          required: true
+        - label: I understand that new ports should preserve the original algorithm and document any platform-specific differences.
+          required: true
+        - label: I have not included private code, credentials, proprietary datasets, or restricted source material in this issue.
+          required: true

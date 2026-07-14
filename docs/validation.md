@@ -21,8 +21,8 @@ data feeds, numerical precision, bar construction, and execution timing. When
 exact parity is not possible, the difference is documented and explained, not
 papered over.
 
-The shared per-column contract used by all ports against the TradingView gold
-exports in `tests/parity/baselines/`:
+The shared per-column contract used by all validated ports against the
+TradingView gold exports in `tests/parity/baselines/`:
 
 | Columns | Tolerance |
 | --- | --- |
@@ -91,11 +91,12 @@ validated three ways against the same gold baselines:
    output is **byte-identical to the Rust port** on all four baselines and
    matches the Python port within `4.8e-14` (tolerance `1e-9`) across all 40
    columns.
-3. **Theorem-named property tests** (`lake test`, 46 checks): every proved
+3. **Theorem-named property tests** (`lake test`, 47 checks): every proved
    invariant in `LorentzianClassification/Properties/` (including the
-   ℚ-model normalization/kernel bounds) and the one deferred Float-level
-   statement are exercised executably, including the ANN ratchet/FIFO across
-   hundreds of iterations.
+   ℚ-model distance aggregation, normalization, and kernel bounds) plus the
+   explicitly named Float/libm boundary are exercised executably, including
+   the ANN ratchet/FIFO across hundreds of iterations. The build contains no
+   admitted theorem or `sorry` declaration.
 
 Reference: the PineScript source in `ports/pinescript/` (algorithmic ground
 truth) and the Python port (parity authority for the output schema), at the
@@ -103,7 +104,7 @@ revision of this commit. Settings: library defaults (the CLI exposes
 `--include-full-history` and `--max-bars-back`, mirroring the Rust CLI).
 Known platform differences and deliberate Python-over-Pine semantics are
 documented in [`ports/lean/README.md`](../ports/lean/README.md)
-("Documented deviations"); proof debt is tracked there as a
+("Documented deviations"); the formalization boundary is tracked there as a
 stated/proven/extracted-to-tests table.
 
 ```bash
@@ -113,11 +114,20 @@ lake build && lake test
   ../../tests/parity/baselines/pine_coinbase_btcusd_1d_limited_history.csv
 ```
 
+## MQL5 Port
+
+The MQL5 port (`ports/mql5/`) ships the indicator plus a thin EA wrapper for
+MetaTrader 5. It runs inside MetaTrader 5 rather than from the repository, so
+it is excluded from the CSV cross-port harness. See `ports/mql5/README.md` for
+the layout and platform notes, and
+`ports/mql5/indicators/LorentzianClassification/PORTING_NOTES.md` for the
+PineScript correspondence.
+
 ## Cross-Port Parity
 
 `tests/parity/cross_port_parity.sh` runs the Rust, Python, and Lean CLIs on each
 baseline and diffs their outputs pairwise with `tests/parity/compare_csv.py`, an
-implementation-independent comparator. This proves the three ports agree
+implementation-independent comparator. This proves the three implemented ports agree
 across the full 40-column result schema, including backtest stream, alerts,
 colors, and trade-stat columns that the Pine exports do not contain.
 
@@ -133,6 +143,7 @@ tolerance, not byte-for-byte).
   [`ports/python/README.md`](../ports/python/README.md),
   [`ports/rust/README.md`](../ports/rust/README.md),
   [`ports/lean/README.md`](../ports/lean/README.md),
+  [`ports/mql5/README.md`](../ports/mql5/README.md),
   [`ports/pinescript/README.md`](../ports/pinescript/README.md).
 - The parity suite, cross-port harness, gold baselines, and coverage matrix are
   documented under [`tests/parity/`](../tests/parity/README.md).

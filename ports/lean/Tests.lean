@@ -5,16 +5,17 @@ import LorentzianClassification
 
 Theorem-named property tests per the team's lean-spec-porting policy: every
 theorem in `LorentzianClassification/Properties/` has a matching deterministic
-check here (1:1 name mapping), and the deferred Float-level statements in
-`Properties/Deferred.lean` are exercised empirically. Stateful logic (the ANN
-ratchet/FIFO, running normalization, the full pipeline) is driven across many
-iterations, not single calls.
+check here (1:1 name mapping), while Float semantics that core Lean deliberately
+leaves opaque are exercised as explicitly named executable-boundary checks.
+Stateful logic (the ANN ratchet/FIFO, running normalization, the full pipeline)
+is driven across many iterations, not single calls.
 
 Run with `lake test`.
 -/
 set_option autoImplicit false
 
 open LorentzianClassification
+open LorentzianClassification.Properties
 
 /-- Deterministic 64-bit LCG (Knuth MMIX constants). -/
 structure Rng where
@@ -275,7 +276,19 @@ def main : IO UInt32 := do
       detOk := detOk && (reprStr (rows1.getD i default) == reprStr (rows2.getD i default))
   st := st.check "processAllBars_deterministic" detOk
 
-  -- Deferred theorem statements, exercised empirically (Float level).
+  -- The proved Rat aggregation theorem and its Float/libm executable boundary.
+  let ratTerms : Fin 5 → Rat
+    | ⟨0, _⟩ => 1
+    | ⟨1, _⟩ => 2
+    | ⟨2, _⟩ => 3
+    | ⟨3, _⟩ => 4
+    | ⟨4, _⟩ => 5
+  st := st.check "ratLorentzianAggregate_nonneg"
+    (ratLorentzianAggregate 5 ratTerms == 15 &&
+     ratLorentzianAggregate 4 ratTerms == 10 &&
+     ratLorentzianAggregate 3 ratTerms == 6 &&
+     ratLorentzianAggregate 2 ratTerms == 3)
+
   let mut nonnegOk := true
   rng := { state := 0xD15C }
   for _ in [0:500] do
@@ -286,7 +299,7 @@ def main : IO UInt32 := do
       match lorentzianDistancePS i 5 w.currentFeatures w.featureArrays with
       | some d => nonnegOk := nonnegOk && (d >= 0.0)
       | none => nonnegOk := false
-  st := st.check "lorentzianDistance_nonneg" nonnegOk
+  st := st.check "lorentzianDistance_float_nonneg (executable boundary)" nonnegOk
 
   let mut normOk := true
   rng := { state := 0x0B0E }

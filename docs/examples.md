@@ -1,10 +1,15 @@
 # Examples
 
-Hands-on, copy-pasteable workflows that exercise every port in this repository.
+Hands-on, copy-pasteable workflows that exercise every implemented port in this
+repository.
 
 Every command below runs **from the repository root** and uses the
 TradingView/Pine gold exports already committed under
 `tests/parity/baselines/`. No external data, accounts, or API keys required.
+
+The MQL5 / MetaTrader 5 port lives under `ports/mql5/`; it runs inside
+MetaTrader 5 rather than from the repository, so it has no repo-runnable
+examples until it joins the parity workflow.
 
 ## 1. Run the indicator on real market data (Python)
 
@@ -100,9 +105,9 @@ Run the whole committed fixture suite, including manifest-pinned source hashes:
 PYTHONPATH=ports/python python3 -m lorentzian_classification validate-fixtures
 ```
 
-Prove all three ports agree with each other on the full 40-column schema
-(builds Rust, runs every baseline through Python + Rust, diffs with the
-stdlib-only comparator so the check is not circular):
+Prove all three implemented ports agree with each other on the full 40-column
+schema (builds Rust and Lean, runs every baseline through Python + Rust + Lean,
+and diffs with the stdlib-only comparator so the check is not circular):
 
 ```bash
 tests/parity/cross_port_parity.sh

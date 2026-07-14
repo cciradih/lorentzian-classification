@@ -38,13 +38,13 @@ strict-coverage status.
 
 ## Cross-Port Parity Harness
 
-Two stdlib-only helpers live alongside the baselines and prove the ports agree
-with each other across the full 40-column result schema (backtest stream,
-alerts, colors, and trade stats that the Pine exports do not contain):
+Two stdlib-only helpers live alongside the baselines and prove the implemented
+ports agree with each other across the full 40-column result schema (backtest
+stream, alerts, colors, and trade stats that the Pine exports do not contain):
 
 | Script | Purpose |
 | --- | --- |
-| `cross_port_parity.sh` | Build the Rust and Lean CLIs, run the Rust, Python, and Lean ports on each gold baseline, and diff their full-schema outputs pairwise (Rust↔Python, Lean↔Python, Lean↔Rust). Exit status is non-zero on any mismatch. |
+| `cross_port_parity.sh` | Build the Rust and Lean CLIs, run the Rust, Python, and Lean implemented ports on each gold baseline, and diff their full-schema outputs pairwise (Rust↔Python, Lean↔Python, Lean↔Rust). Exit status is non-zero on any mismatch. |
 | `compare_csv.py` | Generic CSV comparator (numeric tolerance + exact cells). Used by `cross_port_parity.sh`; depends on no port, so the comparison is not circular. |
 
 ```bash
@@ -52,9 +52,11 @@ tests/parity/cross_port_parity.sh     # PYTHON=python3 TOLERANCE=1e-9 by default
 ```
 
 It runs from the repository root, building the Rust CLI (release) and the Lean
-CLI, then for each baseline runs all three ports' `run` command and compares
-the resulting CSVs cell-by-cell across the full schema. Diff any two output
-CSVs directly with `python3 tests/parity/compare_csv.py a.csv b.csv --tolerance 1e-9`.
+CLI, then for each baseline runs all three implemented ports' `run` command and
+compares the resulting CSVs cell-by-cell across the full schema. The MQL5 port
+is intentionally excluded until it has a runnable parity harness.
+Diff any two output CSVs directly with
+`python3 tests/parity/compare_csv.py a.csv b.csv --tolerance 1e-9`.
 
 ## The Manifest Is the Source of Truth
 

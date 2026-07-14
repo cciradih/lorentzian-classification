@@ -272,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--readme",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "README.md",
+        default=Path(__file__).resolve().parents[2] / "README.md",
         help="README to rewrite (default: the repository README)",
     )
     parser.add_argument("--timeout", type=float, default=30.0)

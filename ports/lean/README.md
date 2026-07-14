@@ -14,8 +14,8 @@ truth.
 
 | Check | Result |
 | --- | --- |
-| `lake build` on the pinned toolchain (`lean-toolchain`: v4.30.0) | clean (1 deliberate `sorry` warning in `Properties/Deferred.lean`; see debt table) |
-| `lake test` (theorem-named property tests) | 46 checks, 0 failures |
+| `lake build` on the pinned toolchain (`lean-toolchain`: v4.30.0) | clean; no admitted theorems or `sorry` declarations |
+| `lake test` (theorem-named property tests) | 47 checks, 0 failures |
 | `parity` subcommand vs all 4 gold baselines (`tests/parity/baselines/`) | PASS, max feature/kernel diff ≪ 1e-6; signals exact |
 | Full 40-column output vs Python (`tests/parity/compare_csv.py`, tol 1e-9) | MATCH on all 4 baselines, max diff ≤ 4.8e-14 |
 | Full 40-column output vs Rust | **byte-identical** on all 4 baselines |
@@ -46,7 +46,7 @@ LorentzianClassification/
   Backtest.lean                     trade accounting
   Display.lean                      Pine color/label encoding
   Pipeline.lean                     Settings, ResultRow, stepBar, processAllBars
-  Properties/                       proved invariants + deferred (sorry) statements
+  Properties/                       proved invariants + explicit Float/libm boundaries
 Main.lean                           CLI (run / parity)
 Tests.lean                          theorem-named executable property tests
 ```
@@ -83,6 +83,7 @@ Proved in core Lean (no external dependencies), in
 | `mem_annScanIndices` / `annScanIndices_length` | the scan covers exactly the closed interval `[startIndex, sizeLoop]`, ascending or descending |
 | `computePrediction_natAbs_le` | `\|prediction\| ≤` neighbor count (labels are ±1/0) |
 | `direction_toInt_natAbs_le_one`, `direction_ofInt_toInt` | label encoding sanity |
+| `ratLorentzianAggregate_nonneg` | the left-associated two-to-five-term distance sum is non-negative when every term is non-negative |
 | `processAllBars_length`, `runBars_length` | exactly one output row per input bar |
 | `nextSignal_holds_on_zero_prediction`, `nextSignal_holds_when_filtered`, `nextSignal_long_iff`, `nextSignal_short_iff` | the signal hold/flip rule |
 | `nextBarsHeld_spec` | bars-held counter semantics |
@@ -93,23 +94,28 @@ Every theorem above has a same-named executable property test in `Tests.lean`
 (the helper lemma `foldl_add_natAbs_le` is exercised through
 `computePrediction_natAbs_le`).
 
-### Formalization debt
+### Formalization boundary
 
-Tracked in `Properties/Deferred.lean`; each invariant is also extracted to an
-executable test:
+Tracked in `Properties/Deferred.lean`; every kernel theorem is proved without
+axioms or admissions, and the remaining opaque Float/libm behavior is called
+out explicitly rather than being presented as a theorem:
 
 | Invariant | Stated | Proven | Extracted to test |
 | --- | --- | --- | --- |
-| `lorentzianDistance_nonneg` (Float) | ✅ | ❌ `sorry` (needs `log(1+x) ≥ 0` + libm monotonicity; opaque in core Lean) | ✅ |
+| `ratLorentzianAggregate_nonneg` (ℚ aggregation model) | ✅ | ✅ | ✅ |
+| `lorentzianDistance` term non-negativity (Float/libm boundary) | deliberately not stated as a kernel theorem because `Float.log`, addition, and order are opaque | N/A; no axiom or admission added | ✅ |
 | `ratNormalizeStep_bounded` (ℚ model) | ✅ | ✅ (proved from first principles, incl. the ℚ scaffolding) | ✅ (Float, 1e-12 slack) |
 | `ratWeightedMean_within_bounds` (ℚ model) | ✅ | ✅ (convex-combination bound by fold induction) | ✅ (Float kernels, 1e-9 slack) |
 
-The normalization and kernel bounds are deliberately stated and proved over
-ℚ: adversarial review produced IEEE counterexamples showing the Float-exact
-bounds can be exceeded by one ulp of final-operation rounding, so the
-Float-exact statements are false and the executable tests carry explicit
-rounding slack instead. Core Lean has no ordered-field lemma library, so the
-needed min/max/division/sum-monotonicity facts are derived in-file.
+The aggregation theorem isolates the exact proof boundary: Lean proves the
+left-associated summation logic once each term is known non-negative, while the
+real implementation's `log(1 + |x|)` behavior is checked against the platform
+libm in the deterministic executable suite. The normalization and kernel bounds
+are likewise stated and proved over ℚ because adversarial review produced IEEE
+counterexamples showing their Float-exact forms can exceed the mathematical
+bounds by one ulp. Those executable checks therefore carry explicit rounding
+slack. Core Lean has no ordered-field lemma library, so the needed
+min/max/division/sum-monotonicity facts are derived in-file.
 
 ## Documented deviations
 

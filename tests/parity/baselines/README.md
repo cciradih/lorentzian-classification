@@ -1,7 +1,7 @@
 # Parity Baselines (TradingView gold exports)
 
 These CSVs are **TradingView/Pine exports of the original Lorentzian Classification
-indicator**, used as ground-truth to validate every port in this repo. They are the
+indicator**, used as ground-truth to validate every implemented port in this repo. They are the
 authoritative per-bar reference for `Prediction`, `Direction`, `Buy`, `Sell`,
 `StopBuy`, `StopSell`, the five normalized features, and the kernel estimate.
 
